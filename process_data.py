@@ -46,10 +46,12 @@ def geocode_addresses(df):
 
     # Map the geocoded locations back to the original DataFrame
     def get_lat(row):
-        return geocoded_locations.get(row['address'])[0]
+        location = geocoded_locations.get(row['address'])
+        return location[0] if location else None
 
     def get_lon(row):
-        return geocoded_locations.get(row['address'])[1]
+        location = geocoded_locations.get(row['address'])
+        return location[1] if location else None
 
     df['latitude'] = df.apply(get_lat, axis=1)
     df['longitude'] = df.apply(get_lon, axis=1)
