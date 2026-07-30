@@ -9,6 +9,7 @@ import argparse
 # --- Configuration ---
 CITIES_PATH = "city_codes.json"
 FIELDS_PATH = "field_codes.json"
+CACHE_PATH = "cache.json"
 
 SEARCH_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/SearchPage/GetSearchPageSearch/"
 CALENDAR_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/Appointments/GetDoctorCalendarRIV"
@@ -92,7 +93,7 @@ def get_doctor_calendar(session, doctor):
         return {"error": str(e)}
 
 
-def scrape_city(city_code, city_name, fields, session_headers, num_fields):
+def scrape_city(city_code, city_name, fields, field_codes, session_headers, num_fields):
     session = requests.Session()
     session.headers.update(session_headers)
     scraped_data = {}
@@ -100,18 +101,19 @@ def scrape_city(city_code, city_name, fields, session_headers, num_fields):
     try:
         scraped_data[city_code] = {}
         fields_list = list(fields.items())
+        fields_list = [tup for tup in fields_list if tup[0] in field_codes]
         if num_fields != -1:
             fields_list = fields_list[:num_fields]
         for j, (field_code, field_name) in enumerate(fields_list):
-            print(f"  -> Processing Field: {field_name} ({field_code}) in city {city_name} ({city_code}) - {j+1} / {len(fields)}")
-            
+            print(f"  -> Processing Field: {field_name} ({field_code}) in city {city_name} ({city_code}) - {j+1} / {len(fields_list)}")
             doctors_list = get_doctors_for_criteria(session, city_code, field_code)
             
             # Store the results in the nested structure
-            scraped_data[city_code][field_code] = {
-                "doctors": doctors_list,
-                "count": len(doctors_list)
-            }
+            if len(doctors_list) > 0:
+                scraped_data[city_code][field_code] = {
+                    "doctors": doctors_list,
+                    "count": len(doctors_list)
+                }
     except Exception as e:
         print(f"Error occured while scraping for city {city_name} ({city_code}): {e}")
     return scraped_data
@@ -135,10 +137,12 @@ def main(num_cities, num_fields, processes):
         CITIES = json.load(f)
     with open(FIELDS_PATH, 'r') as f:
         FIELDS = json.load(f)
+    with open(CACHE_PATH, 'r') as f:
+        CACHE = json.load(f)
 
     print("Starting final scraper...")
 
-    scrape_args = [(city_code, city_name, FIELDS, headers, num_fields) for city_code, city_name in CITIES.items()]
+    scrape_args = [(city_code, city_name, FIELDS, CACHE[city_code], headers, num_fields) for city_code, city_name in CITIES.items()]
     if num_cities != -1:
         scrape_args = scrape_args[:num_cities]
     with multiprocessing.Pool(processes=processes) as pool:
@@ -150,6 +154,13 @@ def main(num_cities, num_fields, processes):
     with open(OUTPUT_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(scraped_data, f, ensure_ascii=False, indent=4)
         
+    print("updating cache...")
+    for scrape_arg in scrape_args:
+        city_code = scrape_arg[0]
+        num_fields = scrape_arg[5]
+        CACHE[city_code] = list(scraped_data[city_code].keys()) + CACHE[city_code][num_fields:]
+        with open(CACHE_PATH, 'w') as f:
+            json.dump(CACHE, f)
     print("Done.")
 
 if __name__ == "__main__":
