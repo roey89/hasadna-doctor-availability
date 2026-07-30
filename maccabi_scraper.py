@@ -97,6 +97,7 @@ def scrape_city(city_code, city_name, fields, field_codes, session_headers, num_
     session = requests.Session()
     session.headers.update(session_headers)
     scraped_data = {}
+    update_cache = True
 
     try:
         scraped_data[city_code] = {}
@@ -115,8 +116,9 @@ def scrape_city(city_code, city_name, fields, field_codes, session_headers, num_
                     "count": len(doctors_list)
                 }
     except Exception as e:
+        update_cache = False
         print(f"Error occured while scraping for city {city_name} ({city_code}): {e}")
-    return scraped_data
+    return scraped_data, update_cache
 
 
 
@@ -147,7 +149,10 @@ def main(num_cities, num_fields, processes):
         scrape_args = scrape_args[:num_cities]
     with multiprocessing.Pool(processes=processes) as pool:
         city_results = pool.starmap(scrape_city, scrape_args)
-    for res in city_results:
+    city_code_to_update = {}
+    for res_and_update in city_results:
+        res = res_and_update[0]
+        city_code_to_update[list(res.keys())[0]] = res_and_update[1]
         scraped_data.update(res)
 
     print(f"Scraping complete. Saving data to {OUTPUT_FILENAME}...")
@@ -158,9 +163,10 @@ def main(num_cities, num_fields, processes):
     for scrape_arg in scrape_args:
         city_code = scrape_arg[0]
         num_fields = scrape_arg[5]
-        CACHE[city_code] = list(scraped_data[city_code].keys()) + CACHE[city_code][num_fields:]
-        with open(CACHE_PATH, 'w') as f:
-            json.dump(CACHE, f)
+        if city_code_to_update[city_code]:
+            CACHE[city_code] = list(scraped_data[city_code].keys()) + CACHE[city_code][num_fields:]
+    with open(CACHE_PATH, 'w') as f:
+        json.dump(CACHE, f)
     print("Done.")
 
 if __name__ == "__main__":
