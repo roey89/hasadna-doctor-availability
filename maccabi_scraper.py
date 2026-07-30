@@ -57,7 +57,7 @@ def get_doctors_for_field(session_headers, field_code):
     if num_of_pages > 0:
         total_pages = num_of_pages
     tqdm.write(f"fetching {total_pages} pages of field {field_code}...")
-    with multiprocessing.Pool(min(total_pages, 8)) as pool:
+    with multiprocessing.Pool(min(total_pages, 32)) as pool:
         datas = pool.starmap(query_by_field, [(field_code, i, session_headers) for i in range(total_pages)])
         for data in datas:
             if data.get("Items"):
