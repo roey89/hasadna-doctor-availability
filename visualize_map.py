@@ -3,6 +3,7 @@ import geopandas
 import logging
 import webbrowser
 import jinja2
+import html
 from shapely.geometry import Point
 from branca.element import MacroElement
 import os
@@ -88,13 +89,12 @@ def create_map(gdf, output_path):
     # professions
     # --------------------------------------------------
 
+    # exclude non-profession / bookkeeping columns from the dropdown
+    excluded_cols = ["geometry", "city", "raw_points", "key_0", "TotalAvailableSlots"]
+
     profession_cols = [
         c for c in gdf.columns
-        if c not in [
-            "geometry",
-            "city",
-            "raw_points"
-        ]
+        if c not in excluded_cols
     ]
 
     default_column = "TotalAvailableSlots"
@@ -153,8 +153,14 @@ def create_map(gdf, output_path):
     # dropdown
     # --------------------------------------------------
 
+    # IMPORTANT: several Hebrew column names contain a literal `"` character
+    # (e.g. ייעוץ רפואת להט"ב). If that character is dropped straight into
+    # value="{c}" it breaks out of the HTML attribute and corrupts the
+    # <select> markup, so selecting that (and sometimes subsequent) options
+    # silently fails to pass the right column name to JS.
+    # html.escape(..., quote=True) escapes " (and & < >) safely.
     options = "\n".join(
-        f'<option value="{c}">{c}</option>'
+        f'<option value="{html.escape(c, quote=True)}">{html.escape(c)}</option>'
         for c in profession_cols
     )
 
@@ -187,6 +193,13 @@ def create_map(gdf, output_path):
     js = f"""
 <script>
 
+// Wrapped in "load" so this always runs AFTER folium's own script section
+// has created the {grid.get_name()} layer variable. Without this, the code
+// below throws a ReferenceError (the variable doesn't exist yet at the point
+// this <script> tag is injected), which silently kills the whole block —
+// including the addEventListener call — so the dropdown appears to do nothing.
+window.addEventListener("load", function(){{
+
 var geojson = {grid.get_name()};
 
 function getColor(value, maxVal){{
@@ -217,7 +230,8 @@ document.getElementById("professionSelect").addEventListener("change",function()
     var maxVal=0;
 
     geojson.eachLayer(function(layer){{
-        var v=layer.feature.properties[column] || 0;
+        var v=layer.feature.properties[column];
+        v = (v===null || v===undefined) ? 0 : v;
 
         if(v>maxVal)
             maxVal=v;
@@ -225,7 +239,8 @@ document.getElementById("professionSelect").addEventListener("change",function()
 
     geojson.eachLayer(function(layer){{
 
-        var value=layer.feature.properties[column] || 0;
+        var value=layer.feature.properties[column];
+        value = (value===null || value===undefined) ? 0 : value;
 
         layer.setStyle({{
             fillColor:getColor(value,maxVal),
@@ -246,6 +261,8 @@ document.getElementById("professionSelect").addEventListener("change",function()
         );
 
     }});
+
+}});
 
 }});
 
