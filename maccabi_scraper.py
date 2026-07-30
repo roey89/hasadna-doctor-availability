@@ -5,6 +5,7 @@ import time
 import uuid
 import multiprocessing
 import argparse
+from tqdm import tqdm
 
 # --- Configuration ---
 CITIES_PATH = "city_codes.json"
@@ -65,6 +66,50 @@ def get_doctors_for_criteria(session, city_code, field_code):
             
     return doctors
 
+
+def get_doctors_for_field(session, field_code):
+    """
+    Fetches all doctors for a given field, handling pagination.
+    """
+    doctors = []
+    page_number = 1
+    total_pages = 1
+    
+    while page_number <= total_pages:
+        payload = {
+            "ChapterId": "001",
+            "Field": field_code,
+            "InitiatorCode": "001",
+            "IsMobileApplication": 0,
+            "ModuleName": "doctorssearchresults",
+            "PageNumber": str(page_number),
+            "RequestId": str(uuid.uuid4()),
+            "Source": "SearchPage",
+            "isKosher": 0
+        }
+
+        try:
+            response = session.post(SEARCH_API_URL, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("Items"):
+                doctors.extend(data["Items"])
+
+            if page_number == 1:
+                num_of_pages = data.get("NumOfPages", 1)
+                if num_of_pages > 0:
+                    total_pages = num_of_pages
+            
+            page_number += 1
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+        except requests.exceptions.RequestException as e:
+            print(f"    - Error fetching doctors page {page_number}: {e}")
+            break
+            
+    return doctors
+
 def get_doctor_calendar(session, doctor):
     """
     Fetches the appointment calendar for a single doctor.
@@ -91,6 +136,19 @@ def get_doctor_calendar(session, doctor):
     except requests.exceptions.RequestException as e:
         print(f"      - Error fetching calendar: {e}. {payload=}")
         return {"error": str(e)}
+
+
+def scrape_field(field_code, session_headers):
+    session = requests.Session()
+    session.headers.update(session_headers)
+    scraped_data = {}
+    doctors_list = get_doctors_for_field(session, field_code)
+    for doctor_data in doctors_list:
+        city_code = doctor_data['CITY_CODE']
+        if city_code not in scraped_data:
+            scraped_data[city_code] = []
+        scraped_data[city_code].append(doctor_data)
+    return scraped_data
 
 
 def scrape_city(city_code, city_name, fields, field_codes, session_headers, num_fields):
@@ -144,29 +202,37 @@ def main(num_cities, num_fields, processes):
 
     print("Starting final scraper...")
 
-    scrape_args = [(city_code, city_name, FIELDS, CACHE[city_code], headers, num_fields) for city_code, city_name in CITIES.items()]
-    if num_cities != -1:
-        scrape_args = scrape_args[:num_cities]
-    with multiprocessing.Pool(processes=processes) as pool:
-        city_results = pool.starmap(scrape_city, scrape_args)
-    city_code_to_update = {}
-    for res_and_update in city_results:
-        res = res_and_update[0]
-        city_code_to_update[list(res.keys())[0]] = res_and_update[1]
-        scraped_data.update(res)
+    scraped_data = {}
+    field_keys = list(FIELDS.keys())
+    if num_fields != -1:
+        field_keys = field_keys[:num_fields]
+    for field_code in tqdm(field_keys):
+        scraped_data[field_code] = scrape_field(field_code, headers)
+
+
+    #  scrape_args = [(city_code, city_name, FIELDS, CACHE[city_code], headers, num_fields) for city_code, city_name in CITIES.items()]
+    #  if num_cities != -1:
+    #      scrape_args = scrape_args[:num_cities]
+    #  with multiprocessing.Pool(processes=processes) as pool:
+    #      city_results = pool.starmap(scrape_city, scrape_args)
+    #  city_code_to_update = {}
+    #  for res_and_update in city_results:
+    #      res = res_and_update[0]
+    #      city_code_to_update[list(res.keys())[0]] = res_and_update[1]
+    #      scraped_data.update(res)
 
     print(f"Scraping complete. Saving data to {OUTPUT_FILENAME}...")
     with open(OUTPUT_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(scraped_data, f, ensure_ascii=False, indent=4)
         
-    print("updating cache...")
-    for scrape_arg in scrape_args:
-        city_code = scrape_arg[0]
-        num_fields = scrape_arg[5]
-        if city_code_to_update[city_code]:
-            CACHE[city_code] = list(scraped_data[city_code].keys()) + CACHE[city_code][num_fields:]
-    with open(CACHE_PATH, 'w') as f:
-        json.dump(CACHE, f)
+    #  print("updating cache...")
+    #  for scrape_arg in scrape_args:
+    #      city_code = scrape_arg[0]
+    #      num_fields = scrape_arg[5]
+    #      if city_code_to_update[city_code]:
+    #          CACHE[city_code] = list(scraped_data[city_code].keys()) + CACHE[city_code][num_fields:]
+    #  with open(CACHE_PATH, 'w') as f:
+    #      json.dump(CACHE, f)
     print("Done.")
 
 if __name__ == "__main__":
