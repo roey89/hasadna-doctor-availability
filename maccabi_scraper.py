@@ -1,21 +1,24 @@
 import requests
 import json
+import simplejson
 import time
 import uuid
+import multiprocessing
+import argparse
 
 # --- Configuration ---
-CITIES = {
-    "5000": "תל אביב - יפו"
-}
-
-FIELDS = {
-    "026": "אונקולוגיה"
-}
+CITIES_PATH = "city_codes.json"
+FIELDS_PATH = "field_codes.json"
 
 SEARCH_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/SearchPage/GetSearchPageSearch/"
 CALENDAR_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/Appointments/GetDoctorCalendarRIV"
 OUTPUT_FILENAME = "maccabi_full_data_with_appointments.json"
 REQUEST_DELAY_SECONDS = 1  # Delay between requests to be respectful to the server.
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_cities", type=int, default=-1, help="How many cities to query")
+parser.add_argument("--num_fields", type=int, default=-1, help="How many fields to query")
+parser.add_argument("--processes", "-j", type=int, default = 8, help="Number of processes to query http with")
 
 def get_doctors_for_criteria(session, city_code, field_code):
     """
@@ -36,11 +39,8 @@ def get_doctors_for_criteria(session, city_code, field_code):
             "PageNumber": str(page_number),
             "RequestId": str(uuid.uuid4()),
             "Source": "SearchPage",
-            "TreatPubTypeList": "768170005,768150013,768170003",
             "isKosher": 0
         }
-
-        print(f"    - Fetching doctors page {page_number}/{total_pages}...")
 
         try:
             response = session.post(SEARCH_API_URL, json=payload, timeout=30)
@@ -81,8 +81,6 @@ def get_doctor_calendar(session, doctor):
         "requestId": str(uuid.uuid4())
     }
 
-    print(f"      - Fetching calendar for Dr. {doctor.get('LAST_NAME', '')} (ID: {doctor.get('EmployeeNumber')})...")
-
     try:
         response = session.post(CALENDAR_API_URL, json=payload, timeout=20)
         response.raise_for_status()
@@ -90,10 +88,37 @@ def get_doctor_calendar(session, doctor):
         time.sleep(REQUEST_DELAY_SECONDS)
         return calendar_data
     except requests.exceptions.RequestException as e:
-        print(f"      - Error fetching calendar: {e}")
+        print(f"      - Error fetching calendar: {e}. {payload=}")
         return {"error": str(e)}
 
-def main():
+
+def scrape_city(city_code, city_name, fields, session_headers, num_fields):
+    session = requests.Session()
+    session.headers.update(session_headers)
+    scraped_data = {}
+
+    try:
+        scraped_data[city_code] = {}
+        fields_list = list(fields.items())
+        if num_fields != -1:
+            fields_list = fields_list[:num_fields]
+        for j, (field_code, field_name) in enumerate(fields_list):
+            print(f"  -> Processing Field: {field_name} ({field_code}) in city {city_name} ({city_code}) - {j+1} / {len(fields)}")
+            
+            doctors_list = get_doctors_for_criteria(session, city_code, field_code)
+            
+            # Store the results in the nested structure
+            scraped_data[city_code][field_code] = {
+                "doctors": doctors_list,
+                "count": len(doctors_list)
+            }
+    except Exception as e:
+        print(f"Error occured while scraping for city {city_name} ({city_code}): {e}")
+    return scraped_data
+
+
+
+def main(num_cities, num_fields, processes):
     """
     Main function to orchestrate the scraping process.
     """
@@ -103,34 +128,23 @@ def main():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Content-Type': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
-        'Referer': 'https://serguide.maccabi4u.co.il/search-results-page/'
+        'Referer': 'https://serguide.maccabi4u.co.il/heb/doctors/doctorssearchresults/?'
     }
-    session = requests.Session()
-    session.headers.update(headers)
+
+    with open(CITIES_PATH, 'r') as f:
+        CITIES = json.load(f)
+    with open(FIELDS_PATH, 'r') as f:
+        FIELDS = json.load(f)
 
     print("Starting final scraper...")
 
-    for city_code, city_name in list(CITIES.items())[:1]: # Limit to first city
-        print(f"Processing City: {city_name} ({city_code})")
-        scraped_data[city_name] = {}
-
-        for field_code, field_name in list(FIELDS.items())[:1]: # Limit to first field
-            print(f"  -> Processing Field: {field_name} ({field_code})")
-            
-            doctors_list = get_doctors_for_criteria(session, city_code, field_code)
-            
-            print(f"  -> Found {len(doctors_list)} doctors. Now fetching their calendars...")
-            
-            for doctor in doctors_list[:1]: # Limit to first doctor
-                # Add a new key to the doctor's dictionary to hold the calendar info
-                doctor["appointments_calendar"] = get_doctor_calendar(session, doctor)
-
-            # Store the results in the nested structure
-            scraped_data[city_name][field_name] = {
-                "doctors": doctors_list,
-                "count": len(doctors_list)
-            }
-            print(f"  -> Finished processing calendars for {field_name} in {city_name}.")
+    scrape_args = [(city_code, city_name, FIELDS, headers, num_fields) for city_code, city_name in CITIES.items()]
+    if num_cities != -1:
+        scrape_args = scrape_args[:num_cities]
+    with multiprocessing.Pool(processes=processes) as pool:
+        city_results = pool.starmap(scrape_city, scrape_args)
+    for res in city_results:
+        scraped_data.update(res)
 
     print(f"Scraping complete. Saving data to {OUTPUT_FILENAME}...")
     with open(OUTPUT_FILENAME, 'w', encoding='utf-8') as f:
@@ -139,4 +153,5 @@ def main():
     print("Done.")
 
 if __name__ == "__main__":
-    main()
+    args = parser.parse_args()
+    main(args.num_cities, args.num_fields, args.processes)
