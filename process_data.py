@@ -73,7 +73,12 @@ if __name__ == "__main__":
     
     if df is not None:
         df = clean_and_preprocess(df)
+        print(df.columns)
+        df = df[['search_city', 'clinic_address', 'profession', 'next_available_date', 'AvailableSlots']]
+        print(df.head())
+
         df = geocode_addresses(df)
+        print(df.head())
         
         # Drop rows where geocoding failed
         df.dropna(subset=['latitude', 'longitude'], inplace=True)
