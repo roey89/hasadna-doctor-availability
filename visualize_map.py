@@ -3,63 +3,66 @@ import geopandas
 import logging
 import webbrowser
 import jinja2
-import json
-from folium.features import JsCode
 from shapely.geometry import Point
-import branca.colormap as cm
 from branca.element import MacroElement
 import os
 
 
 class ClickHandler(MacroElement):
-    _template = jinja2.Template(u"""
-        {% macro script(this, kwargs) %}
-            function onGridClick_{{this._parent.get_name()}}(e) {
-                var layer = e.target;
-                var props = e.target.feature.properties;
-                var points = JSON.parse(props.raw_points);
-                var map = e.target._map;
+    _template = jinja2.Template("""
+    {% macro script(this, kwargs) %}
 
-                var pointsLayer;
-                map.eachLayer(function(l) {
-                    if (l.options && l.options.name === 'Clicked Points') {
-                        pointsLayer = l;
-                    }
-                });
+    function onGridClick(e){
 
-                if (pointsLayer) {
-                    pointsLayer.clearLayers();
-                }
+        var layer = e.target;
+        var props = layer.feature.properties;
+        var points = JSON.parse(props.raw_points || "[]");
 
-                if (points && points.length > 0) {
-                    points.forEach(function(p) {
-                        L.circleMarker([p[0], p[1]], {
-                            radius: 5,
-                            color: 'blue',
-                            fillColor: '#3388ff',
-                            fillOpacity: 0.8
-                        }).addTo(pointsLayer);
-                    });
-                }
+        var map = layer._map;
+
+        var pointsLayer;
+
+        map.eachLayer(function(l){
+            if(l.options && l.options.name==="Clicked Points"){
+                pointsLayer=l;
             }
-            {{this._parent.get_name()}}.on('click', onGridClick_{{this._parent.get_name()}});
-        {% endmacro %}
-        """)
+        });
+
+        if(pointsLayer){
+            pointsLayer.clearLayers();
+        }
+
+        points.forEach(function(p){
+            L.circleMarker([p[0],p[1]],{
+                radius:5,
+                color:"blue",
+                fillColor:"#3388ff",
+                fillOpacity:0.8
+            }).addTo(pointsLayer);
+        });
+
+    }
+
+    {{this._parent.get_name()}}.eachLayer(function(layer){
+        layer.on("click",onGridClick);
+    });
+
+    {% endmacro %}
+    """)
+
     def __init__(self):
-        super(ClickHandler, self).__init__()
-        self._name = 'ClickHandler'
+        super().__init__()
+        self._name = "ClickHandler"
 
 
-def create_map(gdf, map_output_path):
-    """
-    Creates a Folium map with a dropdown for selecting professions.
-    """
+def create_map(gdf, output_path):
 
-    logging.info(f"Creating Folium map for {map_output_path}...")
+    logging.info("Creating map...")
 
-    # -------------------------------------------------------
-    # Calculate map center
-    # -------------------------------------------------------
+    # --------------------------------------------------
+    # map center
+    # --------------------------------------------------
+
     gdf_projected = gdf.to_crs(epsg=2039)
 
     center_x = gdf_projected.geometry.centroid.x.mean()
@@ -68,112 +71,217 @@ def create_map(gdf, map_output_path):
     centroid = geopandas.GeoSeries(
         [Point(center_x, center_y)],
         crs="EPSG:2039"
-    ).to_crs(epsg=4326)
+    ).to_crs(4326)
 
-    center_lat = centroid.geometry.y.iloc[0]
-    center_lon = centroid.geometry.x.iloc[0]
+    center = [
+        centroid.geometry.y.iloc[0],
+        centroid.geometry.x.iloc[0]
+    ]
 
-    # -------------------------------------------------------
-    # Create base map
-    # -------------------------------------------------------
     m = folium.Map(
-        location=[center_lat, center_lon],
+        location=center,
         zoom_start=11,
         tiles="CartoDB positron"
     )
 
-    # -------------------------------------------------------
-    # Columns
-    # -------------------------------------------------------
+    # --------------------------------------------------
+    # professions
+    # --------------------------------------------------
+
     profession_cols = [
         c for c in gdf.columns
-        if c not in ["geometry", "city", "TotalAvailableSlots", "raw_points"]
+        if c not in [
+            "geometry",
+            "city",
+            "raw_points"
+        ]
     ]
 
-    display_cols = ["TotalAvailableSlots"] + profession_cols
+    default_column = "TotalAvailableSlots"
 
-    # -------------------------------------------------------
-    # Create one layer per profession
-    # -------------------------------------------------------
-    for column in display_cols:
+    # --------------------------------------------------
+    # GeoJson
+    # --------------------------------------------------
 
-        fg = folium.FeatureGroup(
-            name=column,
-            show=(column == "TotalAvailableSlots")   # initially visible
-        )
+    max_default = max(gdf[default_column].max(), 1)
 
-        # Use a function generator to correctly capture the column variable
-        def style_function_generator(col):
-            def style_function(feature):
-                # Ensure value is 0 if it's None (null in GeoJSON)
-                value = feature["properties"].get(col) or 0
-                max_value = gdf[col].max()
-                colormap = cm.LinearColormap(
-                    colors=["yellow", "orange", "red"],
-                    vmin=0,
-                    vmax=max_value if max_value > 0 else 1  # Avoid vmax=0
-                )
-                return {
-                    "fillColor": colormap(value),
-                    "color": "black",
-                    "weight": 0.4,
-                    "fillOpacity": 0.75,
-                }
-            return style_function
+    def style(feature):
 
-        tooltip = folium.GeoJsonTooltip(
-            fields=["city", column],
-            aliases=["City:", "Available Slots:"],
-            sticky=False
-        )
-        
-        grid_layer = folium.GeoJson(
-            data=gdf.to_json(),
-            style_function=style_function_generator(column),
-            tooltip=tooltip,
-        )
-        
-        grid_layer.add_child(ClickHandler())
-        grid_layer.add_child(folium.features.GeoJsonPopup(fields=["key_0", column]))
-        grid_layer.add_to(fg)
+        value = feature["properties"].get(default_column) or 0
+        ratio = value / max_default
 
+        if ratio > .75:
+            color = "#1a9850"
+        elif ratio > .5:
+            color = "#66bd63"
+        elif ratio > .25:
+            color = "#fee08b"
+        else:
+            color = "#d73027"
 
-        fg.add_to(m)
+        return {
+            "fillColor": color,
+            "fillOpacity": 0.75,
+            "color": "black",
+            "weight": 0.4,
+        }
 
-    # -------------------------------------------------------
-    # Layer selector (dropdown)
-    # -------------------------------------------------------
-    folium.LayerControl(collapsed=False).add_to(m)
+    tooltip = folium.GeoJsonTooltip(
+        fields=["city", default_column],
+        aliases=["City", "Available"]
+    )
 
-    # -------------------------------------------------------
-    # Add JS to show points on click
-    # -------------------------------------------------------
+    grid = folium.GeoJson(
+        gdf.to_json(),
+        style_function=style,
+        tooltip=tooltip,
+    )
 
-    # Create a feature group to hold the clicked points
-    points_fg = folium.FeatureGroup(name="Clicked Points", show=True).add_to(m)
+    grid.add_child(ClickHandler())
+    grid.add_to(m)
 
-    # -------------------------------------------------------
-    # Save
-    # -------------------------------------------------------
-    m.save(map_output_path)
-    logging.info(f"Map saved to '{map_output_path}'")
-    webbrowser.open(f"file://{os.path.realpath(map_output_path)}")
+    # --------------------------------------------------
+    # clicked points layer
+    # --------------------------------------------------
+
+    folium.FeatureGroup(
+        name="Clicked Points",
+        show=True
+    ).add_to(m)
+
+    # --------------------------------------------------
+    # dropdown
+    # --------------------------------------------------
+
+    options = "\n".join(
+        f'<option value="{c}">{c}</option>'
+        for c in profession_cols
+    )
+
+    dropdown = f"""
+    <div style="
+        position:fixed;
+        top:10px;
+        left:60px;
+        z-index:9999;
+        background:white;
+        padding:10px;
+        border:2px solid gray;
+        border-radius:5px;
+    ">
+    <b>Profession</b><br>
+
+    <select id="professionSelect">
+    {options}
+    </select>
+
+    </div>
+    """
+
+    m.get_root().html.add_child(folium.Element(dropdown))
+
+    # --------------------------------------------------
+    # javascript
+    # --------------------------------------------------
+
+    js = f"""
+<script>
+
+var geojson = {grid.get_name()};
+
+function getColor(value, maxVal){{
+
+    if(maxVal <= 0)
+        maxVal = 1;
+
+    var t = value / maxVal;
+
+    t = Math.max(0, Math.min(1, t));
+
+    // 0 -> 255
+    var r = Math.round(255 * (1 - t) + 144 * t);
+
+    // 0 -> 238
+    var g = Math.round(0 * (1 - t) + 238 * t);
+
+    // 0 -> 144
+    var b = Math.round(0 * (1 - t) + 144 * t);
+
+    return "rgb(" + r + "," + g + "," + b + ")";
+}}
+
+document.getElementById("professionSelect").addEventListener("change",function(){{
+
+    var column=this.value;
+
+    var maxVal=0;
+
+    geojson.eachLayer(function(layer){{
+        var v=layer.feature.properties[column] || 0;
+
+        if(v>maxVal)
+            maxVal=v;
+    }});
+
+    geojson.eachLayer(function(layer){{
+
+        var value=layer.feature.properties[column] || 0;
+
+        layer.setStyle({{
+            fillColor:getColor(value,maxVal),
+            fillOpacity:0.75,
+            color:"black",
+            weight:0.4
+        }});
+
+        layer.unbindTooltip();
+
+        layer.bindTooltip(
+            "<b>City:</b> "
+            + layer.feature.properties.city
+            + "<br><b>"
+            + column
+            + ":</b> "
+            + value
+        );
+
+    }});
+
+}});
+
+</script>
+"""
+
+    m.get_root().html.add_child(folium.Element(js))
+
+    # --------------------------------------------------
+    # save
+    # --------------------------------------------------
+
+    m.save(output_path)
+
+    logging.info(f"Saved to {output_path}")
+
+    webbrowser.open(
+        "file://" + os.path.realpath(output_path)
+    )
 
 
 if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.INFO)
+
     grid_file = "city_grid_data.geojson"
     map_file = "map.html"
 
     try:
-        gdf = geopandas.read_file(grid_file, encoding='utf-8')
+        gdf = geopandas.read_file(grid_file, encoding="utf-8")
+
     except Exception as e:
-        logging.error(f"Error loading '{grid_file}': {e}. Please ensure Phase 2 was completed successfully.")
-        exit()
+        logging.error(e)
+        raise
 
     if not gdf.empty:
         create_map(gdf, map_file)
-        logging.info(f"Phase 3 complete.")
     else:
-        logging.warning(f"GeoJSON data file is empty. Skipping map creation.")
-    
-    logging.info("Map has been generated.")
+        logging.warning("GeoJSON is empty.")
