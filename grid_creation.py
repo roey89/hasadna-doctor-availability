@@ -4,6 +4,7 @@ import geopandas
 from shapely.geometry import Point, Polygon
 import numpy as np
 import logging
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,18 +17,18 @@ def create_geodataframe(df):
     geometry = [Point(xy) for xy in zip(df['longitude'], df['latitude'])]
     return geopandas.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
 
-def create_grid(gdf, grid_size_km=1):
+def create_grid(bbox, grid_size_km=1):
     """
-    Creates a grid of a specified size in kilometers over the area of the GeoDataFrame.
+    Creates a grid of a specified size in kilometers over a given bounding box.
     """
     logging.info(f"Creating {grid_size_km}x{grid_size_km} km grid.")
     # Define the bounding box of the data
-    min_lon, min_lat, max_lon, max_lat = gdf.total_bounds
+    min_lon, min_lat, max_lon, max_lat = bbox
     
     # Approximate conversion from km to degrees
     lat_km_to_deg = grid_size_km / 111.32
     # 1 degree of longitude varies with latitude. Use the mean latitude of the data.
-    mean_latitude = gdf.geometry.y.mean()
+    mean_latitude = (min_lat + max_lat) / 2
     lon_km_to_deg = grid_size_km / (111.32 * np.cos(np.radians(mean_latitude)))
     
     lat_step = lat_km_to_deg
@@ -98,31 +99,51 @@ def aggregate_data_to_grid(gdf, grid):
     return grid_with_data
 
 if __name__ == "__main__":
-    DIARIES_FILE = "diaries.csv" # Not used here, but good to keep consistent
-    PROCESSED_FILE = "processed_diaries.csv" 
-    GRID_FILE = "grid_data.geojson"
+    PROCESSED_FILE = "processed_diaries.csv"
+    CITIES_FILE = "cities.json"
     GRID_SIZE_KM = 5  # Grid size in kilometers
-    
+
+    try:
+        with open(CITIES_FILE, 'r') as f:
+            cities_data = json.load(f)
+    except FileNotFoundError:
+        logging.error(f"Error: The file '{CITIES_FILE}' was not found.")
+        exit()
+
     try:
         df = pd.read_csv(PROCESSED_FILE)
     except FileNotFoundError:
         logging.error(f"Error: The file '{PROCESSED_FILE}' was not found. Please run process_data.py first.")
         exit()
-    
-    if not df.empty:
-        gdf = create_geodataframe(df)
-        
-        # Check if gdf has valid geometry before proceeding
-        if gdf.geometry.is_empty.all():
-            logging.error("GeoDataFrame has no valid geometries. Skipping grid creation and aggregation.")
-        else:
-            grid = create_grid(gdf, grid_size_km=GRID_SIZE_KM)
-            aggregated_grid = aggregate_data_to_grid(gdf, grid)
-            
-            # Save the aggregated data
-            aggregated_grid.to_file(GRID_FILE, driver='GeoJSON')
-            
-            logging.info(f"Aggregated grid data saved to '{GRID_FILE}'")
-            logging.info("Phase 2 complete.")
-    else:
+
+    if df.empty:
         logging.warning("Processed data file is empty. Skipping Phase 2.")
+        exit()
+
+    for city_info in cities_data['cities']:
+        city_name = city_info['name']
+        city_bbox = city_info['bbox']
+        
+        logging.info(f"Processing data for {city_name}")
+
+        city_df = df[df['search_city'] == city_name]
+
+        if city_df.empty:
+            logging.warning(f"No data for {city_name}. Skipping.")
+            continue
+
+        gdf = create_geodataframe(city_df)
+        
+        if gdf.geometry.is_empty.all():
+            logging.error(f"GeoDataFrame for {city_name} has no valid geometries. Skipping.")
+            continue
+
+        grid = create_grid(city_bbox, grid_size_km=GRID_SIZE_KM)
+        aggregated_grid = aggregate_data_to_grid(gdf, grid)
+        
+        output_grid_file = f"grid_data_{city_name.replace(' ', '_')}.geojson"
+        aggregated_grid.to_file(output_grid_file, driver='GeoJSON')
+        
+        logging.info(f"Aggregated grid data for {city_name} saved to '{output_grid_file}'")
+
+    logging.info("Phase 2 complete for all cities.")

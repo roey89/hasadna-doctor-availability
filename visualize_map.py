@@ -3,6 +3,7 @@ import geopandas
 import logging
 import webbrowser
 import jinja2
+import json
 from folium.features import JsCode
 from shapely.geometry import Point
 import branca.colormap as cm
@@ -49,12 +50,12 @@ class ClickHandler(MacroElement):
         self._name = 'ClickHandler'
 
 
-def create_map(gdf, geo_json_path, map_output_path):
+def create_map(gdf, map_output_path):
     """
     Creates a Folium map with a dropdown for selecting professions.
     """
 
-    logging.info("Creating Folium map...")
+    logging.info(f"Creating Folium map for {map_output_path}...")
 
     # -------------------------------------------------------
     # Calculate map center
@@ -157,26 +158,32 @@ def create_map(gdf, geo_json_path, map_output_path):
     m.save(map_output_path)
     logging.info(f"Map saved to '{map_output_path}'")
 
-    try:
-        webbrowser.open(f"file://{os.path.realpath(map_output_path)}")
-    except Exception as e:
-        logging.warning(f"Could not open browser: {e}")
-
 
 if __name__ == "__main__":
-    GRID_FILE = "grid_data.geojson"
-    MAP_FILE = "medical_service_map.html"
+    CITIES_FILE = "cities.json"
 
     try:
-        # Load the GeoJSON data
-        gdf = geopandas.read_file(GRID_FILE, encoding='utf-8')
-
-    except Exception as e:
-        logging.error(f"Error loading '{GRID_FILE}': {e}. Please ensure Phase 2 was completed successfully.")
+        with open(CITIES_FILE, 'r') as f:
+            cities_data = json.load(f)
+    except FileNotFoundError:
+        logging.error(f"Error: The file '{CITIES_FILE}' was not found.")
         exit()
 
-    if not gdf.empty:
-        create_map(gdf, GRID_FILE, MAP_FILE)
-        logging.info("Phase 3 complete.")
-    else:
-        logging.warning("GeoJSON data file is empty. Skipping map creation.")
+    for city_info in cities_data['cities']:
+        city_name = city_info['name']
+        grid_file = f"grid_data_{city_name.replace(' ', '_')}.geojson"
+        map_file = f"map_{city_name.replace(' ', '_')}.html"
+
+        try:
+            gdf = geopandas.read_file(grid_file, encoding='utf-8')
+        except Exception as e:
+            logging.error(f"Error loading '{grid_file}': {e}. Please ensure Phase 2 was completed successfully for this city.")
+            continue
+
+        if not gdf.empty:
+            create_map(gdf, map_file)
+            logging.info(f"Phase 3 complete for {city_name}.")
+        else:
+            logging.warning(f"GeoJSON data file for {city_name} is empty. Skipping map creation.")
+    
+    logging.info("All city maps have been generated.")

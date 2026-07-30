@@ -2,6 +2,7 @@
 import pandas as pd
 from geopy.geocoders import Nominatim
 import time
+from prepare_data import open_and_clean_all
 
 def load_data(file_path):
     """
@@ -21,17 +22,19 @@ def geocode_addresses(df):
     """
     geolocator = Nominatim(user_agent="medical_service_visualizer")
     
-    # Get unique addresses to avoid redundant geocoding
-    unique_addresses = df['clinic_address'].dropna().unique()
+    # Create a new DataFrame with unique address/city pairs
+    unique_locations = df[['address']].drop_duplicates().dropna()
     
     geocoded_locations = {}
-    print(f"Geocoding {len(unique_addresses)} unique addresses...")
+    print(f"Geocoding {len(unique_locations)} unique address/city pairs...")
 
-    for address in unique_addresses:
+    for index, row in unique_locations.iterrows():
+        address = row['address']
         try:
-            # Add 'Tel Aviv' to the address to improve accuracy
-            full_address = f"{address}, Tel Aviv, Israel"
+            # Use the city from the data to improve accuracy
+            full_address = f"{address}, Israel"
             location = geolocator.geocode(full_address)
+            # Store with a tuple key
             if location:
                 geocoded_locations[address] = (location.latitude, location.longitude)
             else:
@@ -40,9 +43,16 @@ def geocode_addresses(df):
         except Exception as e:
             print(f"Error geocoding '{address}': {e}")
             geocoded_locations[address] = (None, None)
-            
-    df['latitude'] = df['clinic_address'].map(lambda addr: geocoded_locations.get(addr, (None, None))[0])
-    df['longitude'] = df['clinic_address'].map(lambda addr: geocoded_locations.get(addr, (None, None))[1])
+
+    # Map the geocoded locations back to the original DataFrame
+    def get_lat(row):
+        return geocoded_locations.get(row['address'])[0]
+
+    def get_lon(row):
+        return geocoded_locations.get(row['address'])[1]
+
+    df['latitude'] = df.apply(get_lat, axis=1)
+    df['longitude'] = df.apply(get_lon, axis=1)
     
     print("Geocoding complete.")
     return df
@@ -53,10 +63,10 @@ def clean_and_preprocess(df):
     """
     print("Cleaning and preprocessing data...")
     # Create AvailableSlots column
-    df['AvailableSlots'] = df['next_available_date'].notna().astype(int)
+    df['AvailableSlots'] = df['available_date'].notna().astype(int)
     
     # Handle missing values
-    df['clinic_address'].fillna('Unknown', inplace=True)
+    df['address'].fillna('Unknown', inplace=True)
     df['profession'].fillna('Unknown', inplace=True)
     
     # Standardize profession names (example: stripping whitespace)
@@ -68,13 +78,14 @@ def clean_and_preprocess(df):
 if __name__ == "__main__":
     DIARIES_FILE = "diaries.csv"
     PROCESSED_FILE = "processed_diaries.csv"
+    from prepare_data import open_and_clean_all
     
-    df = load_data(DIARIES_FILE)
+    df = open_and_clean_all("diaries.csv", "")
+
     
     if df is not None:
         df = clean_and_preprocess(df)
         print(df.columns)
-        df = df[['search_city', 'clinic_address', 'profession', 'next_available_date', 'AvailableSlots']]
         print(df.head())
 
         df = geocode_addresses(df)
