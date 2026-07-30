@@ -1,61 +1,167 @@
 import folium
 import geopandas
-import pandas as pd
 import logging
 import webbrowser
+import jinja2
+from folium.features import JsCode
+from shapely.geometry import Point
+import branca.colormap as cm
+from branca.element import MacroElement
 import os
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class ClickHandler(MacroElement):
+    _template = jinja2.Template(u"""
+        {% macro script(this, kwargs) %}
+            function onGridClick_{{this._parent.get_name()}}(e) {
+                var layer = e.target;
+                var props = e.target.feature.properties;
+                var points = props.raw_points;
+                var map = e.target._map;
+
+                var pointsLayer;
+                map.eachLayer(function(l) {
+                    if (l.options && l.options.name === 'Clicked Points') {
+                        pointsLayer = l;
+                    }
+                });
+
+                if (pointsLayer) {
+                    pointsLayer.clearLayers();
+                }
+
+                if (points && points.length > 0) {
+                    points.forEach(function(p) {
+                        L.circleMarker([p[0], p[1]], {
+                            radius: 5,
+                            color: 'blue',
+                            fillColor: '#3388ff',
+                            fillOpacity: 0.8
+                        }).addTo(pointsLayer);
+                    });
+                }
+            }
+            {{this._parent.get_name()}}.on('click', onGridClick_{{this._parent.get_name()}});
+        {% endmacro %}
+        """)
+    def __init__(self):
+        super(ClickHandler, self).__init__()
+        self._name = 'ClickHandler'
+
 
 def create_map(gdf, geo_json_path, map_output_path):
     """
-    Creates and saves a Folium map with a choropleth layer.
+    Creates a Folium map with a dropdown for selecting professions.
     """
+
     logging.info("Creating Folium map...")
 
-    # Calculate the center of the map
-    center_lat = gdf.geometry.centroid.y.mean()
-    center_lon = gdf.geometry.centroid.x.mean()
+    # -------------------------------------------------------
+    # Calculate map center
+    # -------------------------------------------------------
+    gdf_projected = gdf.to_crs(epsg=2039)
 
-    # Initialize the map
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
+    center_x = gdf_projected.geometry.centroid.x.mean()
+    center_y = gdf_projected.geometry.centroid.y.mean()
 
-    # Define columns for the tooltip, excluding geometry and index columns
-    tooltip_cols = [col for col in gdf.columns if col not in ['geometry', 'key_0']]
+    centroid = geopandas.GeoSeries(
+        [Point(center_x, center_y)],
+        crs="EPSG:2039"
+    ).to_crs(epsg=4326)
 
-    # Create the choropleth layer
-    choropleth = folium.Choropleth(
-        geo_data=gdf,
-        name='Medical Service Availability',
-        data=gdf,
-        columns=['key_0', 'TotalAvailableSlots'],
-        key_on='feature.properties.key_0',
-        fill_color='YlOrRd',
-        fill_opacity=0.7,
-        line_opacity=0.2,
-        legend_name='Total Available Slots per 1km² Grid',
-        highlight=True
-    ).add_to(m)
+    center_lat = centroid.geometry.y.iloc[0]
+    center_lon = centroid.geometry.x.iloc[0]
 
-    # Add tooltips to the choropleth layer
-    choropleth.geojson.add_child(
-        folium.features.GeoJsonTooltip(fields=tooltip_cols, aliases=[col.replace('_', ' ').title() for col in tooltip_cols])
+    # -------------------------------------------------------
+    # Create base map
+    # -------------------------------------------------------
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=11,
+        tiles="CartoDB positron"
     )
 
-    # Add layer control to toggle the choropleth
-    folium.LayerControl().add_to(m)
+    # -------------------------------------------------------
+    # Columns
+    # -------------------------------------------------------
+    profession_cols = [
+        c for c in gdf.columns
+        if c not in ["geometry", "key_0", "TotalAvailableSlots", "raw_points"]
+    ]
 
-    # Save the map to an HTML file
+    display_cols = ["TotalAvailableSlots"] + profession_cols
+
+    # -------------------------------------------------------
+    # Create one layer per profession
+    # -------------------------------------------------------
+    for column in display_cols:
+
+        fg = folium.FeatureGroup(
+            name=column,
+            show=(column == "TotalAvailableSlots")   # initially visible
+        )
+
+        # Use a function generator to correctly capture the column variable
+        def style_function_generator(col):
+            def style_function(feature):
+                # Ensure value is 0 if it's None (null in GeoJSON)
+                value = feature["properties"].get(col) or 0
+                max_value = gdf[col].max()
+                colormap = cm.LinearColormap(
+                    colors=["yellow", "orange", "red"],
+                    vmin=0,
+                    vmax=max_value if max_value > 0 else 1  # Avoid vmax=0
+                )
+                return {
+                    "fillColor": colormap(value),
+                    "color": "black",
+                    "weight": 0.4,
+                    "fillOpacity": 0.75,
+                }
+            return style_function
+
+        tooltip = folium.GeoJsonTooltip(
+            fields=["key_0", column],
+            aliases=["Grid:", "Available Slots:"],
+            sticky=False
+        )
+        
+        grid_layer = folium.GeoJson(
+            data=gdf.to_json(),
+            style_function=style_function_generator(column),
+            tooltip=tooltip,
+        )
+        
+        grid_layer.add_child(ClickHandler())
+        grid_layer.add_child(folium.features.GeoJsonPopup(fields=["key_0", column]))
+        grid_layer.add_to(fg)
+
+
+        fg.add_to(m)
+
+    # -------------------------------------------------------
+    # Layer selector (dropdown)
+    # -------------------------------------------------------
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    # -------------------------------------------------------
+    # Add JS to show points on click
+    # -------------------------------------------------------
+
+    # Create a feature group to hold the clicked points
+    points_fg = folium.FeatureGroup(name="Clicked Points", show=True).add_to(m)
+
+    # -------------------------------------------------------
+    # Save
+    # -------------------------------------------------------
     m.save(map_output_path)
     logging.info(f"Map saved to '{map_output_path}'")
 
-    # Open the map in a new browser tab
     try:
         webbrowser.open(f"file://{os.path.realpath(map_output_path)}")
-        logging.info("Opening map in a new browser tab.")
     except Exception as e:
-        logging.warning(f"Could not automatically open the map: {e}")
+        logging.warning(f"Could not open browser: {e}")
+
 
 if __name__ == "__main__":
     GRID_FILE = "grid_data.geojson"
