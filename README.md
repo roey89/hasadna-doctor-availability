@@ -19,6 +19,7 @@ The Visualization tool is documented in [visualization_README.md] (TODO)
 
 ## FUTURE WORK
 Currently, this tool is a POC on very real data, but not a fully working application.
+Also, constant-paths are proabably broken...
 
 Future work:
 
@@ -28,7 +29,6 @@ Future work:
 2.2. In clalit - since the querying was too slow - only several fields were queried.
 2.3. Both of them need to be researched for duplicates, misfits between them and other data errors
 2.3.1 For example - Tel-Aviv vs Tel-Aviv-Yafo vs Tel Aviv. א.א.ג vs אף אוזן גרון, נשים vs גניקולוגיה etc.
-2.3.1
 3. Add more statistics
 3.1 Normalize per city-capita
 3.2 Create a more complex metrics that match desireable behavior and does not encourage hiding data from clients. For example look at K-closest appointments rather than just one, and reward appointments that occur at a closer date.

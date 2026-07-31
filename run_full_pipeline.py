@@ -13,23 +13,23 @@ def run_command(command):
 
 def run_full_pipeline():
     try:
-        # python clalit_crawl.py --dry-run
-        run_command(["python", "clalit_crawl.py", "--dry-run"])
+        # # python clalit_crawl.py --dry-run
+        # run_command(["python", "clalit_crawl.py", "--dry-run"])
 
-        # python clalit_crawl.py --specs 58 --cities "תל אביב יפו"
-        run_command(["python", "clalit_crawl.py", "--specs", "58", "--cities", "תל אביב יפו"])
+        # # python clalit_crawl.py --specs 58 --cities "תל אביב יפו"
+        # run_command(["python", "clalit_crawl.py", "--specs", "58", "--cities", "תל אביב יפו"])
 
-        # python dump_cities.py
-        run_command(["python", "dump_cities.py"])
+        # # python dump_cities.py
+        # run_command(["python", "dump_cities.py"])
 
-        # python run_parallel.py --setup --workers 10
-        run_command(["python", "run_parallel.py", "--setup", "--workers", "10"])
+        # # python run_parallel.py --setup --workers 10
+        # run_command(["python", "run_parallel.py", "--setup", "--workers", "10"])
 
-        # python run_parallel.py --workers 10 --cities-file data/cities.txt
-        run_command(["python", "run_parallel.py", "--workers", "10", "--cities-file", "data/cities.txt"])
+        # # python run_parallel.py --workers 10 --cities-file data/cities.txt
+        # run_command(["python", "run_parallel.py", "--workers", "10", "--cities-file", "data/cities.txt"])
 
-        # python run_parallel.py --merge --workers 10
-        run_command(["python", "run_parallel.py", "--merge", "--workers", "10"])
+        # # python run_parallel.py --merge --workers 10
+        # run_command(["python", "run_parallel.py", "--merge", "--workers", "10"])
 
         run_command(["python", "maccabi_scraper.py"])
 

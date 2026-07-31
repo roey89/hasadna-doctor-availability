@@ -7,11 +7,11 @@ import multiprocessing
 from tqdm import tqdm
 
 # --- Configuration ---
-FIELDS_PATH = "field_codes.json"
+FIELDS_PATH = "data/clean/maccabi/field_codes.json"
 
 SEARCH_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/SearchPage/GetSearchPageSearch/"
 CALENDAR_API_URL = "https://serguide.maccabi4u.co.il/webapi/api/Appointments/GetDoctorCalendarRIV"
-OUTPUT_FILENAME = "maccabi_full_data_with_appointments.json"
+OUTPUT_FILENAME = "data/raw/maccabi/maccabi_full_data_with_appointments.json"
 REQUEST_DELAY_SECONDS = 1  # Delay between requests to be respectful to the server.
 
 parser = argparse.ArgumentParser()
