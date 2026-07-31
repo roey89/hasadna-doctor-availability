@@ -234,6 +234,50 @@ class Session:
 
 # ---------------------------------------------------------------- session
 
+def _has_tty():
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def _wait_for_login(page, timeout_s=300):
+    """Wait for the user to finish logging in in the browser window, WITHOUT
+    needing an Enter keypress. Polls until the Diary form appears. Works for
+    parallel workers that have no terminal stdin. Returns True if the form
+    showed up in time."""
+    log(f"  waiting up to {timeout_s}s for login to complete in the browser...")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            # If they've landed anywhere with the form, we're in.
+            if page.query_selector("#SelectedGroupCode"):
+                return True
+            # Nudge toward the diary page periodically in case login finished
+            # on the OnlineWeb side but Zimunet wasn't synced yet.
+            if "login" not in page.url.lower():
+                try:
+                    page.request.get(KEEPALIVE_URL)
+                except Exception:
+                    pass
+                page.goto(DIARY_URL, wait_until="domcontentloaded")
+                page.wait_for_timeout(1000)
+                if page.query_selector("#SelectedGroupCode"):
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
+def _prompt_or_wait(page, msg):
+    """Block on Enter if we have a terminal; otherwise poll for the form."""
+    if _has_tty():
+        input(msg)
+        return True
+    return _wait_for_login(page)
+
+
 def ensure_session(session, attempts=3):
     """Zimunet is a SEPARATE app with its own session, seeded from the
     OnlineWeb session via SyncSession.aspx. Hitting /Zimunet/Diary cold gives
@@ -249,8 +293,14 @@ def ensure_session(session, attempts=3):
         # 1. OnlineWeb + the Tamuz auth transfer (the iframe does the handoff)
         page.goto(TAMUZ_URL, wait_until="domcontentloaded")
         if "login" in page.url.lower():
-            input("  Log in in the browser window (ID, password, CAPTCHA, SMS), "
-                  "then press Enter... ")
+            _prompt_or_wait(page,
+                "  Log in in the browser window (ID, password, CAPTCHA, SMS), "
+                "then press Enter... ")
+            # after waiting, check whether we already reached the form
+            if page.query_selector("#SelectedGroupCode"):
+                log(f"  Session OK - form present at {page.url}")
+                session.last_keepalive = time.time()
+                return True
             continue
 
         page.wait_for_timeout(4000)   # let ifrmMainTamuz complete the transfer
@@ -290,8 +340,13 @@ def ensure_session(session, attempts=3):
         elif "/Zimunet/" in page.url and "Diary" not in page.url:
             log("  -> redirected away from Diary")
 
-        input("  Fix it in the browser window (log in, and click through to "
-              "זימון תורים -> רפואה יועצת if needed), then press Enter... ")
+        if _prompt_or_wait(page,
+                "  Fix it in the browser window (log in, and click through to "
+                "זימון תורים -> רפואה יועצת if needed), then press Enter... "):
+            if page.query_selector("#SelectedGroupCode"):
+                log(f"  Session OK - form present at {page.url}")
+                session.last_keepalive = time.time()
+                return True
 
     return False
 
@@ -402,24 +457,46 @@ def crawl(args):
         log(f"Resuming: {len(done)} (spec, city) pairs already done")
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR,
-            headless=args.headless,
-            viewport={"width": 1400, "height": 900},
-            locale="he-IL",
-        )
+        if args.session:
+            # Shared-login mode: load one exported storage_state. No profile,
+            # no login prompt - every worker reuses the same session.json.
+            browser = p.chromium.launch(headless=args.headless)
+            ctx = browser.new_context(storage_state=args.session,
+                                      viewport={"width": 1400, "height": 900},
+                                      locale="he-IL")
+        else:
+            ctx = p.chromium.launch_persistent_context(
+                user_data_dir=args.profile,
+                headless=args.headless,
+                viewport={"width": 1400, "height": 900},
+                locale="he-IL",
+            )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         session = Session(ctx, page, args.delay, args.jitter)
 
         tax = load_taxonomy(session, force=args.refresh_taxonomy)
         specs = select_specs(tax, args)
 
-        # SearchDiaries only works after a GET of /Zimunet/Diary in this
-        # session - the MVC app keeps server-side search context. load_taxonomy
-        # does this via ensure_session(), but skips it when the taxonomy came
-        # from cache, so warm up explicitly here.
+        # Warm up the Zimunet search context (GET /Zimunet/Diary) before any
+        # POST. In shared-session mode there's no login to wait for, so if the
+        # shared session is dead we abort immediately rather than polling.
         if not session.page.query_selector("#SelectedGroupCode"):
-            if not ensure_session(session):
+            if args.session:
+                page.goto(DIARY_URL, wait_until="domcontentloaded")
+                page.wait_for_timeout(1500)
+                if not page.query_selector("#SelectedGroupCode"):
+                    try:
+                        page.request.get(KEEPALIVE_URL)
+                        page.goto(DIARY_URL, wait_until="domcontentloaded")
+                        page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
+                if not page.query_selector("#SelectedGroupCode"):
+                    log("Shared session appears dead - re-export session.json. Aborting.")
+                    ctx.close()
+                    return
+                session.last_keepalive = time.time()
+            elif not ensure_session(session):
                 log("Could not establish a Zimunet session. Aborting.")
                 ctx.close()
                 return
@@ -765,6 +842,11 @@ def main():
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--out", default="./data",
                     help="output directory (default ./data)")
+    ap.add_argument("--profile", default="./clalit-profile",
+                    help="browser profile dir (default ./clalit-profile)")
+    ap.add_argument("--session",
+                    help="path to a shared storage_state JSON (skips login; "
+                         "run headless). Create with test_share.py / --setup.")
 
     args = ap.parse_args()
     crawl(args)
