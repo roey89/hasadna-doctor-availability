@@ -167,6 +167,40 @@ class Session:
             except Exception as e:
                 log(f"  keepalive failed: {e}")
 
+    def _request(self, method, url, **kw):
+        """Single request with retry + backoff on transient network errors
+        (timeouts, resets). A multi-day crawl WILL hit these; one slow page
+        must not kill the run. Raises only after all attempts fail."""
+        from playwright.sync_api import Error as PWError
+        kw.setdefault("timeout", 45000)
+        last = None
+        for attempt in range(1, 5):   # 4 tries
+            try:
+                if method == "post":
+                    r = self.page.request.post(url, **kw)
+                else:
+                    r = self.page.request.get(url, **kw)
+                self.n_requests += 1
+                self.throttle()
+                return r
+            except PWError as e:
+                last = e
+                wait = 2 ** attempt          # 2, 4, 8, 16s
+                log(f"    request error ({type(e).__name__}), retry {attempt}/4 in {wait}s")
+                time.sleep(wait)
+        # exhausted - re-warm the session once, it may have died
+        log("    all retries failed; re-establishing session")
+        if ensure_session(self):
+            try:
+                r = (self.page.request.post if method == "post"
+                     else self.page.request.get)(url, **kw)
+                self.n_requests += 1
+                self.throttle()
+                return r
+            except PWError as e:
+                last = e
+        raise last
+
     def post_search(self, spec_code, group_code, city, include_district):
         self.keepalive_if_due()
         form = {
@@ -176,37 +210,21 @@ class Session:
             "IsSearchDiariesByDistricts": "true" if include_district else "false",
             "SelectedDoctorName": "",
         }
-        r = self.page.request.post(
-            SEARCH_URL,
-            form=form,
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": DIARY_URL,
-            },
-        )
-        self.n_requests += 1
-        self.throttle()
-        return r
+        return self._request("post", SEARCH_URL, form=form,
+                             headers={"X-Requested-With": "XMLHttpRequest",
+                                      "Referer": DIARY_URL})
 
     def get_page(self, page_number):
         self.keepalive_if_due()
-        r = self.page.request.get(
-            f"{PAGING_URL}?pageNumber={page_number}",
-            headers={"X-Requested-With": "XMLHttpRequest", "Referer": DIARY_URL},
-        )
-        self.n_requests += 1
-        self.throttle()
-        return r
+        return self._request("get", f"{PAGING_URL}?pageNumber={page_number}",
+                             headers={"X-Requested-With": "XMLHttpRequest",
+                                      "Referer": DIARY_URL})
 
     def get_visit_page(self, diary_guid):
         self.keepalive_if_due()
-        r = self.page.request.get(
-            f"{BASE}/Zimunet/AvailableVisit/Index/{diary_guid}?isUpdateVisit=False",
-            headers={"Referer": DIARY_URL},
-        )
-        self.n_requests += 1
-        self.throttle()
-        return r
+        return self._request(
+            "get", f"{BASE}/Zimunet/AvailableVisit/Index/{diary_guid}?isUpdateVisit=False",
+            headers={"Referer": DIARY_URL})
 
     def looks_logged_out(self, body):
         return ("Login.aspx" in body or "login.aspx" in body.lower()
@@ -406,9 +424,17 @@ def crawl(args):
                 ctx.close()
                 return
 
-        cities = ([c.strip() for c in args.cities.split(",") if c.strip()]
-                  if args.cities else
-                  (ANCHOR_CITIES if args.anchor_cities else ["תל אביב יפו"]))
+        if args.cities_file:
+            cities = [ln.strip() for ln in
+                      pathlib.Path(args.cities_file).read_text(encoding="utf-8").splitlines()
+                      if ln.strip()]
+            log(f"Loaded {len(cities)} cities from {args.cities_file}")
+        elif args.cities:
+            cities = [c.strip() for c in args.cities.split(",") if c.strip()]
+        elif args.anchor_cities:
+            cities = ANCHOR_CITIES
+        else:
+            cities = ["תל אביב יפו"]
 
         pairs = [(s, c) for s in specs for c in cities]
         todo = [(s, c) for s, c in pairs if f"{s['code']}|{c}" not in done]
@@ -580,10 +606,15 @@ def crawl(args):
 
                     new_on_page = 0
                     for row in rows:
-                        key = stable_key(row)
-                        if key in seen_keys:
+                        skey = stable_key(row)
+                        # Dedup on diary_guid: it's unique per diary, so a
+                        # doctor with two calendars at one clinic (same
+                        # stable_key) keeps both rows. Fall back to stable_key
+                        # only if a guid is somehow missing.
+                        dkey = row.get("diary_guid") or skey
+                        if dkey in seen_keys:
                             continue
-                        seen_keys.add(key)
+                        seen_keys.add(dkey)
                         new_on_page += 1
 
                         rec = {
@@ -597,7 +628,7 @@ def crawl(args):
                             "result_total": total,
                             "page": pno,
                             "days_until": days_until(row.get("next_available_date")),
-                            "stable_key": key,
+                            "stable_key": skey,
                             **row,
                         }
                         diaries.write(rec)
@@ -706,6 +737,8 @@ def main():
     ap.add_argument("--cities", help="comma-separated city names")
     ap.add_argument("--anchor-cities", action="store_true",
                     help=f"use the built-in {len(ANCHOR_CITIES)} anchor cities")
+    ap.add_argument("--cities-file",
+                    help="path to a newline-separated city list (e.g. data/cities.txt)")
     ap.add_argument("--no-district", action="store_true",
                     help="turn OFF 'כולל יישובים בסביבה' (many more cities needed)")
     ap.add_argument("--max-pages", type=int, default=20,
