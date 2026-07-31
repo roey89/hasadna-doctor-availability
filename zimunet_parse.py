@@ -51,6 +51,20 @@ def envelope_info(body):
     return {}
 
 
+# Text shown in the "no appointments" modal (errorType 3).
+NO_RESULTS_MARKERS = ("לא נמצאו תורים", "שנה את הבחירה", "לתשומת לבך")
+
+
+def is_no_results(body, html=None):
+    """True when SearchDiaries returned the 'no appointments here' popup.
+    Encoded as errorType 3 with a modal fragment, NOT a 'found 0' result."""
+    info = envelope_info(body)
+    if info.get("errorType") == 3:
+        return True
+    text = html if html is not None else (body if isinstance(body, str) else "")
+    return any(m in text for m in NO_RESULTS_MARKERS)
+
+
 def _as_soup(html):
     """Defensive BeautifulSoup construction."""
     if not isinstance(html, str):

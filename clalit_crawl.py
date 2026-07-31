@@ -369,6 +369,9 @@ def group_name_for(tax, spec):
 # ---------------------------------------------------------------- crawl
 
 def crawl(args):
+    global OUT
+    OUT = pathlib.Path(args.out)
+    OUT.mkdir(parents=True, exist_ok=True)
     OUT.mkdir(exist_ok=True)
     raw_dir = OUT / "raw"
     if args.save_raw:
@@ -467,6 +470,27 @@ def crawl(args):
 
                 html = zp.unwrap(body)
 
+                # "No appointments here" popup (errorType 3). VERY common on a
+                # national crawl - niche specialty in a small town. Must be
+                # checked BEFORE the non-HTML guard: it carries HTML (a modal),
+                # so it would otherwise slip past, and it must NOT trigger a
+                # session re-warm. Record a zero-row and move on.
+                if zp.is_no_results(body, html):
+                    log("    0 results (no availability)")
+                    diaries.write({
+                        "scraped_at": datetime.now().isoformat(timespec="seconds"),
+                        "group_code": (spec["groups"][0] if spec.get("groups") else ""),
+                        "group_name": group_name_for(tax, spec),
+                        "spec_code": spec["code"], "spec_name": spec["name"],
+                        "search_city": city, "include_district": not args.no_district,
+                        "result_total": 0, "page": 0,
+                    })
+                    done.add(pair_key)
+                    state_path.write_text(
+                        json.dumps({"done": sorted(done)}, ensure_ascii=False),
+                        encoding="utf-8")
+                    continue
+
                 # On errors/redirects the envelope's "data" is not HTML. Most
                 # often the Zimunet search context has gone stale, so re-warm
                 # and retry the pair once before giving up on it.
@@ -489,6 +513,10 @@ def crawl(args):
                     )
                     body = r.text()
                     html = zp.unwrap(body)
+                    if zp.is_no_results(body, html):
+                        log("    0 results (no availability)")
+                        done.add(pair_key)
+                        continue
                     if not html.strip() or "<" not in html:
                         log(f"    Still non-HTML {zp.envelope_info(body)} - skipping")
                         continue
@@ -499,9 +527,22 @@ def crawl(args):
                         html, encoding="utf-8")
 
                 total, header = zp.parse_result_header(html)
-                if total is None and not html.strip():
-                    log("    empty response")
-                    done.add(key)
+
+                # Genuine "no doctors here" - extremely common on a national
+                # crawl (niche specialty in a small town). Record it and move on
+                # without walking the pager. total==0 comes back as valid HTML;
+                # total is None with blank body is an empty/odd response.
+                if total == 0 or (total is None and not html.strip()):
+                    log(f"    0 results")
+                    diaries.write({
+                        "scraped_at": datetime.now().isoformat(timespec="seconds"),
+                        "group_code": (spec["groups"][0] if spec.get("groups") else ""),
+                        "group_name": group_name_for(tax, spec),
+                        "spec_code": spec["code"], "spec_name": spec["name"],
+                        "search_city": city, "include_district": not args.no_district,
+                        "result_total": 0, "page": 0,
+                    })
+                    done.add(pair_key)
                     continue
 
                 # facet counts come free with the search
@@ -689,6 +730,8 @@ def main():
     ap.add_argument("--restart", action="store_true", help="ignore the resume checkpoint")
     ap.add_argument("--dry-run", action="store_true", help="one pair only, then stop")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    ap.add_argument("--out", default="./data",
+                    help="output directory (default ./data)")
 
     args = ap.parse_args()
     crawl(args)
