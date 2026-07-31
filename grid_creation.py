@@ -1,38 +1,28 @@
 import pandas as pd
 import geopandas
-from shapely.geometry import Point
 import logging
 import json
+import os
 import osmnx as ox
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def create_geodataframe(df):
-    """Converts a pandas DataFrame to a GeoDataFrame."""
-    logging.info("Creating GeoDataFrame from input DataFrame.")
-    geometry = [Point(xy) for xy in zip(df['longitude'], df['latitude'])]
-    return geopandas.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
-
-def aggregate_data_to_city_grid(gdf, city_grid):
+def aggregate_data_to_city_grid(df, city_grid):
     """Aggregates data from the GeoDataFrame onto the city grid."""
     logging.info("Aggregating data to city grid.")
     
-    # Spatial join to assign points to city polygons
-    joined_gdf = geopandas.sjoin(gdf, city_grid, how="inner", predicate='within')
-    
-    if joined_gdf.empty:
-        logging.warning("No data points found within any city boundaries.")
+    if df.empty:
+        logging.warning("Input DataFrame is empty.")
         city_grid['TotalAvailableSlots'] = 0
         city_grid['raw_points'] = json.dumps([])
         return city_grid
 
     # Aggregate available slots per profession per city
-    aggregated_slots = joined_gdf.groupby(['index_right', 'profession'])['AvailableSlots'].sum().unstack(fill_value=0)
+    aggregated_slots = df.groupby(['city', 'profession'])['AvailableSlots'].sum().unstack(fill_value=0)
 
-    # Collect raw lat/lon data for each city
-    joined_gdf['raw_lat_lon'] = joined_gdf.apply(lambda row: (row.latitude, row.longitude), axis=1)
-    raw_points_per_city = joined_gdf.groupby('index_right')['raw_lat_lon'].apply(lambda x: json.dumps(list(x)))
+    # The data no longer contains lat/lon, so raw_points will be empty.
+    # The column is kept for schema compatibility with the map visualization.
+    raw_points_per_city = df.groupby('city').apply(lambda x: json.dumps([]))
 
     # Combine aggregated data
     aggregated_data = aggregated_slots.join(raw_points_per_city.rename('raw_points'))
@@ -40,16 +30,14 @@ def aggregate_data_to_city_grid(gdf, city_grid):
     # Add a total column for available slots
     profession_cols = [col for col in aggregated_data.columns if col != 'raw_points']
     aggregated_data['TotalAvailableSlots'] = aggregated_data[profession_cols].sum(axis=1)
-
-    # Join back to the city_grid
-    grid_with_data = city_grid.join(aggregated_data, on=city_grid.index.to_series().rename('index_right'))
+    # Join with city_grid on the city name
+    grid_with_data = city_grid.merge(aggregated_data, on='city', how='left')
 
     # Fill NaN values for cities that had no data points
     all_agg_cols = profession_cols + ['TotalAvailableSlots']
     for col in all_agg_cols:
         grid_with_data[col] = grid_with_data[col].fillna(0)
     grid_with_data['raw_points'] = grid_with_data['raw_points'].fillna(json.dumps([]))
-    
     logging.info("Data aggregation complete.")
     return grid_with_data
 
@@ -81,32 +69,43 @@ if __name__ == "__main__":
     osmnx.settings.log_console = True
     osmnx.settings.user_agent = 'my-doctor-availability-app'
     
-    city_polygons = []
-    for city_name in unique_cities:
-        if not isinstance(city_name, str) or not city_name.strip():
-            continue
-        try:
-            # Append ', Israel' to help osmnx find the city
-            gdf_city = ox.geocode_to_gdf(f"{city_name}, Israel")
-            gdf_city['city'] = city_name  # Add city name column for reference
-            city_polygons.append(gdf_city)
-        except Exception as e:
-            logging.warning(f"Could not retrieve boundary for '{city_name}': {e}")
-    
-    if not city_polygons:
-        logging.error("Could not retrieve any city boundaries. Aborting.")
-        exit()
+    # Caching for city polygons
+    CITY_POLYGONS_CACHE = "city_polygons_cache.geojson"
 
-    # This is our new grid, combining all city polygons
-    city_grid = pd.concat(city_polygons, ignore_index=True)
-    # Keep only necessary columns for the grid
-    city_grid = city_grid[['city', 'geometry']]
-    
-    # Create GeoDataFrame from the doctor data points
-    gdf_points = create_geodataframe(df)
+    if os.path.exists(CITY_POLYGONS_CACHE):
+        logging.info(f"Loading city polygons from cache: {CITY_POLYGONS_CACHE}")
+        city_grid = geopandas.read_file(CITY_POLYGONS_CACHE)
+    else:
+        logging.info("Cache not found. Fetching city polygons from osmnx.")
+        city_polygons = []
+        for city_name in unique_cities:
+            if not isinstance(city_name, str) or not city_name.strip():
+                continue
+            try:
+                # Append ', Israel' to help osmnx find the city
+                gdf_city = ox.geocode_to_gdf(f"{city_name}, Israel")
+                gdf_city['city'] = city_name  # Add city name column for reference
+                city_polygons.append(gdf_city)
+            except Exception as e:
+                logging.warning(f"Could not retrieve boundary for '{city_name}': {e}")
+        
+        if not city_polygons:
+            logging.error("Could not retrieve any city boundaries. Aborting.")
+            exit()
+
+        # This is our new grid, combining all city polygons
+        city_grid = pd.concat(city_polygons, ignore_index=True)
+        # Keep only necessary columns for the grid
+        city_grid = city_grid[['city', 'geometry']]
+        
+        # Save to cache
+        city_grid.to_file(CITY_POLYGONS_CACHE, driver='GeoJSON')
+        logging.info(f"Saved city polygons to cache: {CITY_POLYGONS_CACHE}")
     
     # Aggregate the point data onto the new city grid
-    aggregated_grid = aggregate_data_to_city_grid(gdf_points, city_grid)
+    aggregated_grid = aggregate_data_to_city_grid(df, city_grid)
+
+    aggregated_grid.to_file(OUTPUT_FILE, driver='GeoJSON')
 
     aggregated_grid.to_file(OUTPUT_FILE, driver='GeoJSON')
     
