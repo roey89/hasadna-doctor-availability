@@ -102,7 +102,7 @@ def open_and_parse_maccabi(
     df = df[existing_columns]
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["available_date"] = pd.to_datetime(df["available_date"])
-    df = df.drop_duplicates(ignore_index=True)
+    df = df.drop_duplicates(subset=df.columns[df.columns != "timestamp"]).reset_index(drop=True)
     return df
 
 
@@ -113,7 +113,9 @@ def open_and_parse_clalit_parallel(
     for csv_path in glob.glob(str(Path(clalit_dir_path) / "out*" / "diaries.csv")):
         df = open_and_parse_clalit_single(csv_path, columns_to_keep=columns_to_keep)
         df_list.append(df)
-    return pd.concat(df_list).drop_duplicates(ignore_index=True)
+    df = pd.concat(df_list)
+    df = df.drop_duplicates(subset=df.columns[df.columns != "timestamp"]).reset_index(drop=True)
+    return df
 
 
 def open_and_parse_clalit_single(
@@ -127,7 +129,9 @@ def open_and_parse_clalit_single(
     df = df[existing_columns]
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["available_date"] = pd.to_datetime(df["available_date"], format="%d.%m.%Y")
-    df = df.drop_duplicates(ignore_index=True)
+    df = df.drop_duplicates(subset=df.columns[df.columns != "timestamp"]).reset_index(
+        drop=True
+    )
     return df
 
 
@@ -155,4 +159,4 @@ def open_and_clean_all(clalit_path: Path, maccabi_path: Path) -> pd.DataFrame:
             maccabi_df,
         ],
         ignore_index=True,
-    )
+    ).drop_duplicates(ignore_index=True)
