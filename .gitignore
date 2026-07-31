@@ -219,3 +219,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.vscode/
+*.csv
+*.html
+*.geojson
+*.md
+
+cache/*
