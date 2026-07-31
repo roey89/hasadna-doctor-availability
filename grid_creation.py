@@ -17,27 +17,58 @@ def aggregate_data_to_city_grid(df, city_grid):
         city_grid['raw_points'] = json.dumps([])
         return city_grid
 
-    # Aggregate available slots per profession per city
-    aggregated_slots = df.groupby(['city', 'profession'])['AvailableSlots'].sum().unstack(fill_value=0)
+    # --- New implementation starts here ---
 
-    # The data no longer contains lat/lon, so raw_points will be empty.
-    # The column is kept for schema compatibility with the map visualization.
-    raw_points_per_city = df.groupby('city').apply(lambda x: json.dumps([]))
+    # 1. Create a dataframe to hold aggregated data, indexed by city.
+    aggregated_df = pd.DataFrame(index=df['city'].unique())
 
-    # Combine aggregated data
-    aggregated_data = aggregated_slots.join(raw_points_per_city.rename('raw_points'))
+    # 2. Calculate TotalAvailableSlots and raw_points.
+    aggregated_df['TotalAvailableSlots'] = df.groupby('city')['AvailableSlots'].sum()
+    aggregated_df['raw_points'] = json.dumps([]) # Kept for schema compatibility
 
-    # Add a total column for available slots
-    profession_cols = [col for col in aggregated_data.columns if col != 'raw_points']
-    aggregated_data['TotalAvailableSlots'] = aggregated_data[profession_cols].sum(axis=1)
-    # Join with city_grid on the city name
-    grid_with_data = city_grid.merge(aggregated_data, on='city', how='left')
+    # 3. Aggregate profession data.
+    if 'kupah' not in df.columns or df['kupah'].isnull().all():
+        logging.warning("'kupah' column not found or is empty. Creating simple profession columns.")
+        prof_data = df.groupby(['city', 'profession'])['AvailableSlots'].sum().unstack(fill_value=0)
+    else:
+        logging.info("Creating nested profession/kupah objects.")
+        
+        # Group by city, profession, and kupah.
+        grouped = df.groupby(['city', 'profession', 'kupah'])['AvailableSlots'].sum().astype(int)
+        
+        # Pivot kupah to columns.
+        pivoted = grouped.unstack(level='kupah', fill_value=0)
+        
+        # For each (city, profession), convert the row of kupah counts into a dictionary.
+        # Only include kupahs with available slots.
+        prof_as_dicts = pivoted.apply(lambda row: row[row > 0].to_dict(), axis=1)
+        
+        # Unstack professions to become columns, with dictionaries as values.
+        prof_data = prof_as_dicts.unstack(level='profession')
 
-    # Fill NaN values for cities that had no data points
-    all_agg_cols = profession_cols + ['TotalAvailableSlots']
-    for col in all_agg_cols:
-        grid_with_data[col] = grid_with_data[col].fillna(0)
-    grid_with_data['raw_points'] = grid_with_data['raw_points'].fillna(json.dumps([]))
+    # 4. Join profession data into the main aggregated dataframe.
+    if not prof_data.empty:
+        aggregated_df = aggregated_df.join(prof_data)
+
+    # 5. Merge with the geo-grid.
+    grid_with_data = city_grid.merge(aggregated_df, left_on='city', right_index=True, how='left')
+
+    # 6. Fill NaN/None values.
+    grid_with_data['TotalAvailableSlots'] = grid_with_data['TotalAvailableSlots'].fillna(0).astype(int)
+    grid_with_data['raw_points'].fillna(json.dumps([]), inplace=True)
+
+    profession_cols = prof_data.columns if 'prof_data' in locals() and hasattr(prof_data, 'columns') else []
+    for col in profession_cols:
+        if col not in grid_with_data.columns:
+            continue
+            
+        if 'kupah' in df.columns and not df['kupah'].isnull().all():
+            # Fill missing profession data for a city with an empty dict.
+            grid_with_data[col] = grid_with_data[col].apply(lambda x: {} if pd.isna(x) else x)
+            grid_with_data[col] = grid_with_data[col].apply(json.dumps) # Serialize nested dict to JSON string
+        else:
+            grid_with_data[col].fillna(0, inplace=True)
+
     logging.info("Data aggregation complete.")
     return grid_with_data
 
