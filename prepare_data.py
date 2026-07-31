@@ -1,6 +1,7 @@
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import glob
 import json
 
 INTERESTING_COLUMNS = [
@@ -101,10 +102,21 @@ def open_and_parse_maccabi(
     df = df[existing_columns]
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["available_date"] = pd.to_datetime(df["available_date"])
+    df = df.drop_duplicates(ignore_index=True)
     return df
 
 
-def open_and_parse_clalit(
+def open_and_parse_clalit_parallel(
+    clalit_dir_path: Path, columns_to_keep: list[str] = CLALIT_USEFUL_COLUMNS
+) -> pd.DataFrame:
+    df_list = []
+    for csv_path in glob.glob(str(Path(clalit_dir_path) / "out*" / "diaries.csv")):
+        df = open_and_parse_clalit_single(csv_path, columns_to_keep=columns_to_keep)
+        df_list.append(df)
+    return pd.concat(df_list).drop_duplicates(ignore_index=True)
+
+
+def open_and_parse_clalit_single(
     csv_path: Path, columns_to_keep: list[str] = CLALIT_USEFUL_COLUMNS
 ) -> pd.DataFrame:
     raw_data = pd.read_csv(csv_path)
@@ -115,6 +127,7 @@ def open_and_parse_clalit(
     df = df[existing_columns]
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["available_date"] = pd.to_datetime(df["available_date"], format="%d.%m.%Y")
+    df = df.drop_duplicates(ignore_index=True)
     return df
 
 
@@ -131,7 +144,7 @@ def enrich_city(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def open_and_clean_all(clalit_path: Path, maccabi_path: Path) -> pd.DataFrame:
-    clalit_df = open_and_parse_clalit(clalit_path)
+    clalit_df = open_and_parse_clalit_parallel(clalit_path)
     maccabi_df = open_and_parse_maccabi(maccabi_path)
     clalit_df = enrich_days_until(clalit_df)
     clalit_df = enrich_city(clalit_df)
