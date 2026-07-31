@@ -64,11 +64,10 @@ def open_maccabi_to_df(
 
     for prof_code, level_1 in maccabi_data.items():
         for city_code, level_2 in level_1.items():
-            for doctor in level_2.get("doctors", []):
+            for doctor in level_2:
                 rows.append(
                     {
-                        "prof_code": city_code,
-                        # "prof_code": prof_code, # TODO: swap when shanos updates the data
+                        "prof_code": prof_code,
                         "city_code": city_code,
                         **doctor,
                     }
