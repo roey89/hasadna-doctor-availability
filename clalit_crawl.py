@@ -25,7 +25,7 @@ Examples:
     python3 clalit_crawl.py --all-specs --anchor-cities
     python3 clalit_crawl.py --all-specs --anchor-cities --slots --slots-within-days 14
 
-Output (./data/):
+Output (./data/raw/clalit/):
     diaries.csv     one row per (spec, city, doctor) with next_available_date
     slots.csv       one row per individual appointment slot (Tier 2)
     taxonomy.json   group + specialization code tables
@@ -55,8 +55,7 @@ SEARCH_URL = f"{BASE}/Zimunet/Diary/SearchDiaries"
 PAGING_URL = f"{BASE}/Zimunet/Diary/Paging"
 KEEPALIVE_URL = f"{BASE}/OnlineWeb/Services/tamuz/SyncSession.aspx"
 
-PROFILE_DIR = "./clalit-profile"
-OUT = pathlib.Path("./data")
+OUT = pathlib.Path("./data/raw/clalit")
 
 # "כולל יישובים בסביבה" pulls in neighbouring localities, so a couple of dozen
 # anchor cities cover the country instead of ~1,200 individual localities.

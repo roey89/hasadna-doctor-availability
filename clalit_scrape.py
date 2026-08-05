@@ -10,7 +10,7 @@ CAPTCHA, SMS code). Then press Enter in the terminal.
 Later runs: your session is reused from ./clalit-profile, so it goes straight
 to the page. If the session has expired you'll be asked to log in again.
 
-Outputs into ./output/ :
+Outputs into ./data/raw/clalit/output/ :
     page.html   - full HTML of the page, for inspecting selectors later
     page.txt    - visible text
     tables.csv  - any HTML tables found
@@ -24,8 +24,8 @@ import sys
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 URL = "https://e-services.clalit.co.il/OnlineWeb/Services/Tamuz/TamuzTransfer.aspx"
-PROFILE_DIR = "./clalit-profile"   # session cookies persist here
-OUT = pathlib.Path("./output")
+PROFILE_DIR = "./data/raw/clalit/clalit-profile"   # session cookies persist here
+OUT = pathlib.Path("./data/raw/clalit/output")
 
 
 def main():
